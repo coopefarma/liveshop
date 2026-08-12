@@ -1360,20 +1360,26 @@ function renderDetalheCliente() {
   }).join('');
 }
 
-async function baixar(id, quanto) {
-  const o = PEDIDOS.find(x => x.id === id); if (!o) return;
-  const falta = pendenteDe(o);
-  if (falta <= 0) return;
-  let q = quanto != null ? quanto : (parseInt(($('q-'+id)||{}).value) || falta);
-  if (q < 1) { toast('Quantidade inválida.'); return; }
-  if (q > falta) q = falta;
+/* Grava a baixa no banco.
+   - Só grava se a quantidade retirada no banco ainda for a que este terminal viu.
+     Assim, se outro caixa baixou o mesmo item no meio do caminho, nada é sobrescrito.
+   - Tenta uma segunda vez em caso de oscilação de rede antes de reclamar. */
+async function aplicarBaixa(id, q) {
+  const o = PEDIDOS.find(x => x.id === id);
+  if (!o) return { ok:false, motivo:'sumiu' };
 
-  const nova = nz(o.qtd_retirada) + q;
+  const anterior = nz(o.qtd_retirada);
+  const nova = anterior + q;
   const agora = new Date().toISOString();
-  const { error } = await sb.from('ls_pedidos')
-    .update({ qtd_retirada: nova, retirado_em: agora, retirado_por: sessao.nome })
-    .eq('id', id);
-  if (error) { erroSb(error,'Dar baixa'); return; }
+  const campos = { qtd_retirada: nova, retirado_em: agora, retirado_por: sessao.nome };
+
+  let res = await sb.from('ls_pedidos').update(campos).eq('id', id).eq('qtd_retirada', anterior).select('id');
+  if (res.error) {
+    await new Promise(r => setTimeout(r, 800));
+    res = await sb.from('ls_pedidos').update(campos).eq('id', id).eq('qtd_retirada', anterior).select('id');
+  }
+  if (res.error) return { ok:false, motivo:'erro', erro:res.error };
+  if (!res.data || !res.data.length) return { ok:false, motivo:'conflito' };
 
   o.qtd_retirada = nova; o.retirado_em = agora; o.retirado_por = sessao.nome;
   const p = produto(o.produto_id);
@@ -1382,19 +1388,73 @@ async function baixar(id, quanto) {
     produto_nome: p ? p.nome : '', qtd: q, usuario: sessao.nome
   }).then(()=>{}, ()=>{});
 
-  atualizarTudo();
-  if (quanto == null) toast('✓ Baixa de ' + q + ' un — ' + (p ? p.nome : ''), 1600);
+  return { ok:true, produto:p, qtd:q };
+}
+
+let ocupado = false;
+function travarBotoes(on) {
+  document.querySelectorAll('#ret-itens button, #btn-tudo').forEach(b => b.disabled = on);
+}
+
+async function baixar(id, quanto) {
+  if (ocupado) return;
+  const o = PEDIDOS.find(x => x.id === id); if (!o) return;
+  const falta = pendenteDe(o);
+  if (falta <= 0) return;
+  let q = quanto != null ? quanto : parseInt(($('q-'+id) || {}).value);
+  if (!q || isNaN(q) || q < 1) q = falta;
+  if (q > falta) q = falta;
+
+  ocupado = true;
+  travarBotoes(true);
+  try {
+    const r = await aplicarBaixa(id, q);
+    if (r.ok) {
+      atualizarTudo();
+      toast('✓ Baixa de ' + q + ' un — ' + (r.produto ? r.produto.nome : ''), 1600);
+    } else if (r.motivo === 'conflito') {
+      await carregarPedidos();
+      atualizarTudo();
+      toast('⚠️ Outro terminal mexeu neste item agora. Confira o que ficou faltando.', 4200);
+    } else if (r.motivo === 'erro') {
+      erroSb(r.erro, 'Dar baixa');
+    }
+  } finally {
+    ocupado = false;
+    travarBotoes(false);
+  }
 }
 
 async function retirarTudo() {
+  if (ocupado) return;
   const itens = PEDIDOS.filter(o => (o.cliente_key || chave(o.cliente)) === selCliente && pendenteDe(o) > 0);
   if (!itens.length) return;
   const totalPend = itens.reduce((s,o)=>s+pendenteDe(o),0);
-  if (!confirm('Dar baixa em TODOS os ' + totalPend + ' item(ns) pendentes de ' + itens[0].cliente + '?')) return;
+  const nome = itens[0].cliente;
+  if (!confirm('Dar baixa em TODOS os ' + totalPend + ' item(ns) pendentes de ' + nome + '?')) return;
+
+  ocupado = true;
+  travarBotoes(true);
   loading(true, 'Registrando baixas...');
-  for (const o of itens) await baixar(o.id, pendenteDe(o));
-  loading(false);
-  toast('✓ ' + itens[0].cliente + ' retirou tudo!');
+  let feitos = 0, falhas = 0, conflitos = 0;
+  try {
+    for (const o of itens) {
+      const r = await aplicarBaixa(o.id, pendenteDe(o));
+      if (r.ok) feitos++;
+      else if (r.motivo === 'conflito') conflitos++;
+      else falhas++;
+    }
+  } finally {
+    loading(false);
+    ocupado = false;
+    if (conflitos || falhas) await carregarPedidos();
+    atualizarTudo();
+    travarBotoes(false);
+  }
+
+  if (!falhas && !conflitos) toast('✓ ' + nome + ' retirou tudo!');
+  else if (falhas) toast('⚠️ ' + feitos + ' item(ns) baixados, ' + falhas + ' falharam. Tente de novo nos que sobraram.', 4600);
+  else toast('⚠️ ' + feitos + ' item(ns) baixados. Outro terminal já havia mexido em ' + conflitos + '.', 4600);
 }
 
 async function estornar(id) {
@@ -1402,8 +1462,12 @@ async function estornar(id) {
   if (!nz(o.qtd_retirada)) return;
   if (!confirm('Desfazer a baixa de ' + o.qtd_retirada + ' unidade(s) de ' + o.cliente + '?')) return;
   const devolvido = nz(o.qtd_retirada);
-  const { error } = await sb.from('ls_pedidos')
-    .update({ qtd_retirada: 0, retirado_em: null, retirado_por: null }).eq('id', id);
+  const campos = { qtd_retirada: 0, retirado_em: null, retirado_por: null };
+  let { error } = await sb.from('ls_pedidos').update(campos).eq('id', id);
+  if (error) {
+    await new Promise(r => setTimeout(r, 800));
+    ({ error } = await sb.from('ls_pedidos').update(campos).eq('id', id));
+  }
   if (error) { erroSb(error,'Desfazer baixa'); return; }
   o.qtd_retirada = 0; o.retirado_em = null; o.retirado_por = null;
   const p = produto(o.produto_id);
