@@ -337,9 +337,8 @@ button { font-family: inherit; }
     </div>
 
     <div class="pane right">
-      <div style="padding:11px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
-        <h2 id="sel-titulo" style="font-size:13px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">← Selecione um produto</h2>
-        <button class="btn btn-sm btn-ghost" onclick="exportarProduto()" style="font-size:11px">↓ CSV</button>
+      <div style="padding:11px 14px;border-bottom:1px solid var(--border)">
+        <h2 id="sel-titulo" style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">← Selecione um produto</h2>
       </div>
       <div class="stats">
         <div class="stat"><div class="n" id="st-prod">0</div><div class="l">Produtos</div></div>
@@ -2254,16 +2253,6 @@ function csvResumo(qual) {
   }
   baixarArquivo(paraCSV(L), 'resumo_' + (qual==='p'?'produtos':'clientes') + '_' + (LIVE.data||'') + '.csv', 'text/csv;charset=utf-8');
   toast('📥 Resumo exportado!');
-}
-
-function exportarProduto() {
-  const lista = selProdId ? pedidosDoProduto(selProdId) : PEDIDOS;
-  if (!lista.length) { toast('Nada para exportar.'); return; }
-  const L = [['#','Cliente','Qtd','Retirado','Falta','Preço','Total','Obs']];
-  lista.forEach((o,i) => L.push([i+1,o.cliente,o.qtd,nz(o.qtd_retirada),pendenteDe(o),fmt(o.preco_unit),fmt(valorPedido(o)),o.obs||'']));
-  const p = produto(selProdId);
-  baixarArquivo(paraCSV(L), 'pedidos_' + String((p?p.nome:'todos')).slice(0,25).replace(/[^\w]+/g,'_') + '.csv', 'text/csv;charset=utf-8');
-  toast('Exportado!');
 }
 
 function exportarXLSInova() {
