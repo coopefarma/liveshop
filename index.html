@@ -767,12 +767,18 @@ async function carregarPedidos() {
   PEDIDOS = data || [];
 }
 
+/* Só redesenha o que está na tela — durante a live isso é o que evita travadinha. */
 function atualizarTudo() {
-  if (modAtual === 'live' || podeGerir()) { renderProdutos(); renderPedidosProduto(); renderTodosPedidos(); }
-  renderClientes();
-  renderDetalheCliente();
-  if (modAtual === 'painel') renderPainel();
-  if (modAtual === 'live' && $('sub-resumo').style.display !== 'none') renderResumoLive();
+  reindexar();
+  if (modAtual === 'live') {
+    renderProdutos();
+    renderPedidosProduto();
+    if (subAtual === 'pedidos') renderTodosPedidos();
+    if (subAtual === 'resumo')  renderResumoLive();
+  }
+  if (modAtual === 'retirada') { renderClientes(); renderDetalheCliente(); }
+  if (modAtual === 'painel')   renderPainel();
+  atualizarStats();
   atualizarBarraRetirada();
 }
 
@@ -787,16 +793,44 @@ function horaBR(ts) {
   return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}) + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 }
 
-/* ══════════════════ REALTIME ══════════════════ */
+/* ══════════════════ REALTIME ══════════════════
+   Aplica só a linha que mudou, sem rebaixar a lista inteira do servidor,
+   e agrupa as telas para redesenhar uma vez só. */
+function aplicarMudanca(lista, p) {
+  const ev = p.eventType || p.event;
+  const nova = p.new, velha = p.old;
+  if (ev === 'DELETE') {
+    const id = (velha && velha.id != null) ? velha.id : (nova && nova.id);
+    const i = lista.findIndex(x => x.id === id);
+    if (i >= 0) lista.splice(i, 1);
+    return true;
+  }
+  if (!nova || nova.id == null) return false;
+  const i = lista.findIndex(x => x.id === nova.id);
+  if (i >= 0) Object.assign(lista[i], nova); else lista.push(nova);
+  return true;
+}
+
+function daLiveAtual(p) {
+  const linha = p.new || p.old;
+  return !LIVE || !linha || linha.live_id == null || linha.live_id === LIVE.id;
+}
+
+let tRedesenho = null;
+function agendarRedesenho() {
+  clearTimeout(tRedesenho);
+  tRedesenho = setTimeout(() => { tRedesenho = null; atualizarTudo(); }, 120);
+}
+
 function assinarRealtime() {
   sb.channel('ls-live')
-    .on('postgres_changes', {event:'*', schema:'public', table:'ls_produtos'}, async p => {
-      if (p.new && LIVE && p.new.live_id !== LIVE.id) return;
-      await carregarProdutos(); atualizarTudo();
+    .on('postgres_changes', {event:'*', schema:'public', table:'ls_produtos'}, p => {
+      if (!daLiveAtual(p)) return;
+      if (aplicarMudanca(PRODUTOS, p)) { PRODUTOS.sort((a,b)=>nz(a.ordem)-nz(b.ordem)); agendarRedesenho(); }
     })
-    .on('postgres_changes', {event:'*', schema:'public', table:'ls_pedidos'}, async p => {
-      if (p.new && LIVE && p.new.live_id !== LIVE.id) return;
-      await carregarPedidos(); atualizarTudo();
+    .on('postgres_changes', {event:'*', schema:'public', table:'ls_pedidos'}, p => {
+      if (!daLiveAtual(p)) return;
+      if (aplicarMudanca(PEDIDOS, p)) agendarRedesenho();
     })
     .on('postgres_changes', {event:'*', schema:'public', table:'ls_lives'}, async () => {
       await carregarLives(); if (modAtual==='config') renderConfig();
@@ -808,9 +842,27 @@ function assinarRealtime() {
 }
 
 /* ══════════════════ HELPERS DE NEGÓCIO ══════════════════ */
+/* Índice recalculado uma vez por redesenho — evita varrer todos os pedidos
+   para cada linha da tabela de produtos. */
+let IDX = {};
+function reindexar() {
+  const m = {};
+  PEDIDOS.forEach(o => {
+    const a = m[o.produto_id] || (m[o.produto_id] = { peds:0, uns:0, ret:0, val:0, pend_val:0 });
+    a.peds++;
+    a.uns += nz(o.qtd);
+    a.ret += nz(o.qtd_retirada);
+    a.val += nz(o.preco_unit) * nz(o.qtd);
+    a.pend_val += nz(o.preco_unit) * pendenteDe(o);
+  });
+  IDX = m;
+}
+const VAZIO = { peds:0, uns:0, ret:0, val:0, pend_val:0 };
+function resumoProduto(id) { return IDX[id] || VAZIO; }
+
 function produto(id) { return PRODUTOS.find(p => p.id === id); }
 function pedidosDoProduto(id) { return PEDIDOS.filter(o => o.produto_id === id); }
-function unidadesDoProduto(id) { return pedidosDoProduto(id).reduce((s,o)=>s+nz(o.qtd),0); }
+function unidadesDoProduto(id) { return resumoProduto(id).uns; }
 function valorPedido(o) { return nz(o.preco_unit) * nz(o.qtd); }
 function restanteEstoque(p) { return p.estoque == null ? null : nz(p.estoque) - unidadesDoProduto(p.id); }
 function pendenteDe(o) { return Math.max(0, nz(o.qtd) - nz(o.qtd_retirada)); }
@@ -866,7 +918,9 @@ function alterna(s, c) {
 }
 
 /* ══════════════════ MÓDULO LIVE — PRODUTOS ══════════════════ */
+let subAtual = 'produtos';
 function subLive(qual) {
+  subAtual = qual;
   ['produtos','pedidos','resumo'].forEach((k,i) => {
     document.querySelectorAll('#mod-live .subtabs div')[i].classList.toggle('active', k===qual);
     $('sub-'+k).style.display = k===qual ? 'flex' : 'none';
@@ -891,7 +945,7 @@ function renderProdutos() {
   }
 
   tb.innerHTML = lista.map(p => {
-    const n = pedidosDoProduto(p.id).length;
+    const n = resumoProduto(p.id).peds;
     const rest = restanteEstoque(p);
     let tagE = '';
     if (rest !== null) {
@@ -1002,10 +1056,12 @@ function cardPedido(o, n) {
         '<button class="btn btn-sm btn-ghost" onclick="$(\'ed-'+o.id+'\').style.display=\'none\'">✕</button>' +
       '</div>' +
     '</div>' +
-    (LIVE && LIVE.status === 'aberta' ? '<div style="display:flex;flex-direction:column;gap:3px">' +
-      '<button class="btn btn-sm btn-ghost" title="Editar quantidade" onclick="editarQtd('+o.id+')">✏️</button>' +
-      '<button class="btn btn-sm btn-ghost" style="color:var(--red)" title="Cancelar pedido" onclick="apagarPedido('+o.id+')">✕</button>' +
-    '</div>' : '') +
+    (o._gravando
+      ? '<div style="font-size:10px;color:var(--muted);white-space:nowrap;padding-top:3px">gravando…</div>'
+      : (LIVE && LIVE.status === 'aberta' ? '<div style="display:flex;flex-direction:column;gap:3px">' +
+          '<button class="btn btn-sm btn-ghost" title="Editar quantidade" onclick="editarQtd('+o.id+')">✏️</button>' +
+          '<button class="btn btn-sm btn-ghost" style="color:var(--red)" title="Cancelar pedido" onclick="apagarPedido('+o.id+')">✕</button>' +
+        '</div>' : '')) +
   '</div>';
 }
 
@@ -1047,9 +1103,10 @@ async function lancarPedido() {
     lancado_por: sessao.nome
   };
 
-  const { data, error } = await sb.from('ls_pedidos').insert(novo).select().single();
-  if (error) { erroSb(error,'Registrar pedido'); return; }
-  PEDIDOS.push(data);
+  /* O pedido aparece na tela na hora e o campo já libera para o próximo cliente.
+     A gravação segue por baixo; se falhar, o pedido some e você é avisado. */
+  const provisorio = Object.assign({ id: -Date.now(), _gravando: true }, novo);
+  PEDIDOS.push(provisorio);
 
   $('f-cliente').value = ''; $('f-qtd').value = '1'; $('f-obs').value = '';
   $('f-cliente').focus();
@@ -1057,10 +1114,29 @@ async function lancarPedido() {
 
   if (p && p.estoque != null) {
     const r = restanteEstoque(p);
-    if (r === 0) { toast('✅ Pedido de '+cliente+' registrado! 🚫 ESGOTADO!'); return; }
-    if (r <= 3) { toast('✅ Registrado! ⚠️ Restam '+r+' unidade(s)!'); return; }
+    if (r === 0) toast('✅ Pedido de '+cliente+' registrado! 🚫 ESGOTADO!');
+    else if (r <= 3) toast('✅ Registrado! ⚠️ Restam '+r+' unidade(s)!');
+    else toast('✅ Pedido de ' + cliente + ' registrado!');
+  } else {
+    toast('✅ Pedido de ' + cliente + ' registrado!');
   }
-  toast('✅ Pedido de ' + cliente + ' registrado!');
+
+  let { data, error } = await sb.from('ls_pedidos').insert(novo).select().single();
+  if (error) {
+    await new Promise(r => setTimeout(r, 700));
+    ({ data, error } = await sb.from('ls_pedidos').insert(novo).select().single());
+  }
+
+  const i = PEDIDOS.indexOf(provisorio);
+  if (i >= 0) PEDIDOS.splice(i, 1);
+
+  if (error) {
+    atualizarTudo();
+    erroSb(error, 'O pedido de ' + cliente + ' NÃO foi gravado');
+    return;
+  }
+  if (!PEDIDOS.some(x => x.id === data.id)) PEDIDOS.push(data);   /* pode já ter chegado pelo tempo real */
+  atualizarTudo();
 }
 
 function editarQtd(id) {
@@ -1160,7 +1236,7 @@ async function salvarProduto() {
 
 async function excluirProduto() {
   const p = produto(editProdId); if (!p) return;
-  const n = pedidosDoProduto(p.id).length;
+  const n = resumoProduto(p.id).peds;
   if (!confirm('Excluir "' + (p.nome||'produto') + '"?' + (n ? '\n\nOs ' + n + ' pedido(s) deste produto também serão apagados.' : '') + '\n\nEsta ação não pode ser desfeita.')) return;
   const { error } = await sb.from('ls_produtos').delete().eq('id', p.id);
   if (error) { erroSb(error,'Excluir produto'); return; }
@@ -1179,10 +1255,10 @@ function renderResumoLive() {
 
   const prods = PRODUTOS.map(p => ({
     id: p.id, ordem: nz(p.ordem), seq: p.seq_label || '', nome: p.nome || '',
-    peds: pedidosDoProduto(p.id).length,
-    uns: unidadesDoProduto(p.id),
-    ret: pedidosDoProduto(p.id).reduce((s,o)=>s+nz(o.qtd_retirada),0),
-    val: pedidosDoProduto(p.id).reduce((s,o)=>s+valorPedido(o),0)
+    peds: resumoProduto(p.id).peds,
+    uns: resumoProduto(p.id).uns,
+    ret: resumoProduto(p.id).ret,
+    val: resumoProduto(p.id).val
   }));
 
   const clis = agruparClientes().map(c => ({ nome:c.nome, key:c.key, peds:c.itens, uns:c.un, ret:c.ret, val:c.val }));
@@ -1506,11 +1582,9 @@ function renderPainel() {
       '<td class="num" style="font-size:11px;color:var(--muted)">'+(c.ultima?horaBR(c.ultima):'—')+'</td></tr>').join('');
 
   const prods = PRODUTOS.map(p => {
-    const ped = pedidosDoProduto(p.id);
-    const u = ped.reduce((s,o)=>s+nz(o.qtd),0);
-    const r = ped.reduce((s,o)=>s+nz(o.qtd_retirada),0);
-    return { id:p.id, ordem:nz(p.ordem), seq:p.seq_label||'', nome:p.nome||'', un:u, ret:r, pend:u-r,
-             pend_val: ped.reduce((s,o)=>s+nz(o.preco_unit)*pendenteDe(o),0) };
+    const a = resumoProduto(p.id);
+    return { id:p.id, ordem:nz(p.ordem), seq:p.seq_label||'', nome:p.nome||'', un:a.uns, ret:a.ret,
+             pend:a.uns-a.ret, pend_val:a.pend_val };
   }).filter(p => p.pend > 0);
 
   const linhasProd = ordenar(prods, ordPainel.prod).map(p =>
@@ -2093,9 +2167,9 @@ function exportarCSV() {
   const L = [['=== PRODUTOS DA LIVE ===']];
   L.push(['Nº','Produto','Código','EAN','Preço','Estoque','Pedidos','Unidades','Retiradas']);
   PRODUTOS.slice().sort((a,b)=>nz(a.ordem)-nz(b.ordem)).forEach(p => {
-    const ped = pedidosDoProduto(p.id);
+    const a = resumoProduto(p.id);
     L.push([p.seq_label||'', p.nome||'', p.codigo||'', p.ean||'', fmt(p.preco), p.estoque==null?'':p.estoque,
-      ped.length, ped.reduce((s,o)=>s+nz(o.qtd),0), ped.reduce((s,o)=>s+nz(o.qtd_retirada),0)]);
+      a.peds, a.uns, a.ret]);
   });
   L.push([]);
   L.push(['=== PEDIDOS ===']);
@@ -2123,9 +2197,8 @@ function csvResumo(qual) {
     L = [['Nº','Produto','Pedidos','Quantidade','Retirado','Valor']];
     ordenar(PRODUTOS.map(p => ({
       ordem:nz(p.ordem), seq:p.seq_label||'', nome:p.nome||'',
-      peds:pedidosDoProduto(p.id).length, uns:unidadesDoProduto(p.id),
-      ret:pedidosDoProduto(p.id).reduce((s,o)=>s+nz(o.qtd_retirada),0),
-      val:pedidosDoProduto(p.id).reduce((s,o)=>s+valorPedido(o),0)
+      peds:resumoProduto(p.id).peds, uns:resumoProduto(p.id).uns,
+      ret:resumoProduto(p.id).ret, val:resumoProduto(p.id).val
     })), ordResumo.p).forEach(p => L.push([p.seq,p.nome,p.peds,p.uns,p.ret,fmt(p.val)]));
   } else {
     L = [['Cliente','Pedidos','Quantidade','Retirado','Valor']];
