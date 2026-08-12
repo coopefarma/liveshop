@@ -856,18 +856,22 @@ function assinarRealtime() {
    para cada linha da tabela de produtos. */
 let IDX = {};
 function reindexar() {
+  const porId = {};
+  PRODUTOS.forEach(p => { porId[p.id] = p; });
   const m = {};
   PEDIDOS.forEach(o => {
-    const a = m[o.produto_id] || (m[o.produto_id] = { peds:0, uns:0, ret:0, val:0, pend_val:0 });
+    const a = m[o.produto_id] || (m[o.produto_id] = { peds:0, uns:0, ret:0, val:0, pend_val:0, divergentes:0 });
     a.peds++;
     a.uns += nz(o.qtd);
     a.ret += nz(o.qtd_retirada);
     a.val += nz(o.preco_unit) * nz(o.qtd);
     a.pend_val += nz(o.preco_unit) * pendenteDe(o);
+    const p = porId[o.produto_id];
+    if (p && Number(o.preco_unit) !== precoUnitDe(p, o.qtd)) a.divergentes++;
   });
   IDX = m;
 }
-const VAZIO = { peds:0, uns:0, ret:0, val:0, pend_val:0 };
+const VAZIO = { peds:0, uns:0, ret:0, val:0, pend_val:0, divergentes:0 };
 function resumoProduto(id) { return IDX[id] || VAZIO; }
 
 function produto(id) { return PRODUTOS.find(p => p.id === id); }
@@ -964,9 +968,13 @@ function renderProdutos() {
       else tagE = '<span class="mini ok">'+rest+' rest.</span>';
     }
     const pend = p.pendente ? '<span class="mini warn">buscando dados...</span>' : '';
+    const div = resumoProduto(p.id).divergentes;
+    const tagPreco = div
+      ? '<span class="mini warn" title="Clique no lápis e salve para acertar" style="cursor:help">⚠ ' + div + ' pedido(s) com preço antigo</span>'
+      : '';
     return '<tr class="'+(selProdId===p.id?'sel':'')+(p.no_ar?' noar':'')+'">' +
       '<td class="seq">'+esc(p.seq_label||'')+'</td>' +
-      '<td><div class="prod-name" style="'+(n?'':'color:var(--red)')+'">'+(p.no_ar?'📡 ':'')+esc(p.nome||'(sem nome)')+tagE+pend+'</div>'+
+      '<td><div class="prod-name" style="'+(n?'':'color:var(--red)')+'">'+(p.no_ar?'📡 ':'')+esc(p.nome||'(sem nome)')+tagE+pend+tagPreco+'</div>'+
         (p.descricao?'<div class="prod-sub">'+esc(p.descricao)+'</div>':'')+'</td>' +
       '<td><span class="mono">'+esc(p.codigo||'—')+'</span></td>' +
       '<td><span class="mono">'+esc(p.ean||'—')+'</span></td>' +
@@ -1231,36 +1239,15 @@ async function salvarProduto() {
   };
 
   if (editProdId) {
-    const antes = produto(editProdId) || {};
-    const mudouPreco = Number(antes.preco) !== Number(reg.preco)
-      || Number(antes.tier_qtd||0) !== Number(reg.tier_qtd||0)
-      || Number(antes.tier_preco||0) !== Number(reg.tier_preco||0);
-    const precoAntigo = Number(antes.preco);
-
     const { error } = await sb.from('ls_produtos').update(reg).eq('id', editProdId);
     if (error) { erroSb(error,'Salvar produto'); return; }
     const alvo = produto(editProdId);
     if (alvo) Object.assign(alvo, reg);
 
-    /* Preço corrigido depois de a live já ter rodado: oferece acertar os pedidos.
-       Sem isso, o total e a tela de retirada continuariam com o valor errado. */
-    if (mudouPreco && alvo) {
-      const nPed = resumoProduto(alvo.id).peds;
-      if (nPed > 0) {
-        const desatualizados = pedidosDoProduto(alvo.id)
-          .filter(o => Number(o.preco_unit) !== precoUnitDe(alvo, o.qtd)).length;
-        if (desatualizados > 0 && confirm(
-            'O preço passou de R$ ' + fmt(precoAntigo) + ' para R$ ' + fmt(reg.preco) + '.\n\n' +
-            'Este produto tem ' + desatualizados + ' pedido(s) gravados com o valor anterior.\n\n' +
-            'Atualizar também esses pedidos?\n' +
-            'Clique OK se o preço estava errado. Cancele se foi uma mudança de preço a partir de agora.')) {
-          loading(true, 'Ajustando ' + desatualizados + ' pedido(s)...');
-          const n = await ajustarPrecoDosPedidos(alvo);
-          loading(false);
-          toast('💲 ' + n + ' pedido(s) atualizados para o preço novo.', 3600);
-        }
-      }
-    }
+    /* Sempre confere se existem pedidos gravados com preço diferente do que o produto
+       tem agora — vale tanto para o preço que acabou de mudar quanto para um que já
+       tinha sido corrigido antes e deixou os pedidos para trás. */
+    if (alvo) await oferecerAcertoDePreco(alvo);
   } else {
     const { data, error } = await sb.from('ls_produtos').insert(reg).select().single();
     if (error) { erroSb(error,'Salvar produto'); return; }
@@ -1289,6 +1276,30 @@ async function excluirProduto() {
 /* Preço que um pedido deste produto deveria ter, considerando a faixa por quantidade */
 function precoUnitDe(p, qtd) {
   return (p.tier_qtd && p.tier_preco && nz(qtd) >= p.tier_qtd) ? nz(p.tier_preco) : nz(p.preco);
+}
+
+/* Pedidos deste produto que estão gravados com preço diferente do preço atual */
+function pedidosComPrecoAntigo(p) {
+  return pedidosDoProduto(p.id).filter(o => Number(o.preco_unit) !== precoUnitDe(p, o.qtd));
+}
+
+async function oferecerAcertoDePreco(p) {
+  const fora = pedidosComPrecoAntigo(p);
+  if (!fora.length) return 0;
+  const valores = [...new Set(fora.map(o => fmt(o.preco_unit)))].map(v => 'R$ ' + v).join(' e ');
+  const ok = confirm(
+    '"' + (p.nome || 'Produto') + '" está a R$ ' + fmt(p.preco) +
+    (p.tier_qtd && p.tier_preco ? ' (R$ ' + fmt(p.tier_preco) + ' a partir de ' + p.tier_qtd + ' un)' : '') +
+    ',\nmas ' + fora.length + ' pedido(s) foram gravados com ' + valores + '.\n\n' +
+    'Atualizar esses pedidos para o preço atual?\n\n' +
+    'OK — o preço estava errado e deve valer para todos.\n' +
+    'Cancelar — o valor antigo estava certo e só os próximos pedidos usam o novo.');
+  if (!ok) return 0;
+  loading(true, 'Ajustando ' + fora.length + ' pedido(s)...');
+  const n = await ajustarPrecoDosPedidos(p);
+  loading(false);
+  toast('💲 ' + n + ' pedido(s) atualizados. Total recalculado.', 3800);
+  return n;
 }
 
 /* Regrava o preço dos pedidos de um produto — usado quando o valor da live estava errado */
