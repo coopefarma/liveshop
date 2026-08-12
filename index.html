@@ -1898,22 +1898,25 @@ function importarBackup(file) {
     const peds  = Array.isArray(bk.orders) ? bk.orders.filter(o => o && o.client) : [];
     if (!prods.length) { toast('O backup não tem produtos.'); return; }
 
-    const aviso = (PRODUTOS.length || PEDIDOS.length)
-      ? '\n\n⚠️ A live "' + LIVE.nome + '" já tem ' + PRODUTOS.length + ' produto(s) e ' + PEDIDOS.length +
-        ' pedido(s). O backup será ACRESCENTADO, podendo duplicar.'
-      : '';
-    if (!confirm('Trazer para a live "' + LIVE.nome + '":\n\n' + prods.length + ' produto(s)\n' + peds.length +
-        ' pedido(s)\n\nOrigem: ' + (bk.liveName || 'backup') + ' — ' + (bk.liveDate || 's/ data') + aviso)) return;
+    /* 1. Casa cada produto do backup com o que já está na live (pelo código, ou pelo nome
+       quando não há código). Assim, se você já importou a planilha, nada duplica. */
+    const norm = s => String(s || '').trim().toLowerCase();
+    const dePara = {};
+    const paraCriar = [], idsDeQuemCriar = [];
+    let reaproveitados = 0;
 
-    loading(true, 'Gravando ' + prods.length + ' produto(s)...');
+    prods.forEach((p, i) => {
+      const cod = p.code ? String(p.code).trim() : '';
+      const nome = norm(p.name);
+      const igual = PRODUTOS.find(x =>
+        cod ? String(x.codigo || '').trim() === cod : (nome && norm(x.nome) === nome));
+      if (igual) { dePara[p.id] = igual.id; reaproveitados++; return; }
 
-    /* 1. produtos — a ordem de retorno é a mesma da inserção */
-    const novos = prods.map((p, i) => {
       const seq = String(p.seqLabel || p.seq || (i+1));
-      return {
+      paraCriar.push({
         live_id: LIVE.id, seq_label: seq, ordem: ordemDe(seq),
         nome: String(p.name || '').trim() || '(sem nome)',
-        codigo: (p.code ? String(p.code).trim() : null) || null,
+        codigo: cod || null,
         ean: (p.ean ? String(p.ean).trim() : null) || null,
         preco: Number(p.price) || 0,
         estoque: (p.stock === 0 || p.stock) ? parseInt(p.stock) : null,
@@ -1921,15 +1924,28 @@ function importarBackup(file) {
         tier_qtd: parseInt(p.tierQty) || null,
         tier_preco: parseFloat(p.tierPrice) || null,
         pendente: false
-      };
+      });
+      idsDeQuemCriar.push(p.id);
     });
 
-    const { data: criados, error: e1 } = await sb.from('ls_produtos').insert(novos).select('id');
-    if (e1) { loading(false); erroSb(e1, 'Importar produtos'); return; }
+    const resumoProds = reaproveitados
+      ? reaproveitados + ' produto(s) já estão na live e serão reaproveitados' +
+        (paraCriar.length ? ', ' + paraCriar.length + ' novo(s) serão criados' : '')
+      : prods.length + ' produto(s) serão criados';
 
-    /* 2. de-para: id antigo do backup -> id novo do banco */
-    const dePara = {};
-    prods.forEach((p, i) => { if (criados[i]) dePara[p.id] = criados[i].id; });
+    const aviso = PEDIDOS.length
+      ? '\n\n⚠️ Esta live já tem ' + PEDIDOS.length + ' pedido(s). Os do backup serão somados.'
+      : '';
+    if (!confirm('Trazer para a live "' + LIVE.nome + '":\n\n' + resumoProds + '\n' +
+        peds.length + ' pedido(s)\n\nOrigem: ' + (bk.liveName || 'backup') + ' — ' +
+        (bk.liveDate || 's/ data') + aviso)) return;
+
+    if (paraCriar.length) {
+      loading(true, 'Gravando ' + paraCriar.length + ' produto(s)...');
+      const { data: criados, error: e1 } = await sb.from('ls_produtos').insert(paraCriar).select();
+      if (e1) { loading(false); erroSb(e1, 'Importar produtos'); return; }
+      criados.forEach((r, i) => { dePara[idsDeQuemCriar[i]] = r.id; });
+    }
 
     /* 3. pedidos */
     let importados = 0, orfaos = 0;
@@ -1968,8 +1984,10 @@ function importarBackup(file) {
     loading(false);
     fechar('m-importar');
     atualizarTudo();
-    toast('✅ ' + novos.length + ' produto(s) e ' + importados + ' pedido(s) importados!' +
-      (orfaos ? ' (' + orfaos + ' pedido(s) sem produto foram ignorados)' : ''), 4200);
+    toast('✅ ' + importados + ' pedido(s) importados! ' +
+      (reaproveitados ? reaproveitados + ' produto(s) reaproveitados' : '') +
+      (paraCriar.length ? (reaproveitados ? ' e ' : '') + paraCriar.length + ' criado(s)' : '') + '.' +
+      (orfaos ? ' (' + orfaos + ' pedido(s) sem produto foram ignorados)' : ''), 5000);
   };
   r.readAsText(file);
 }
