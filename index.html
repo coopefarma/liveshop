@@ -748,6 +748,10 @@ async function carregarLives() {
       || LIVES.find(l => l.status === 'aberta')
       || LIVES[0] || null;
   if (LIVE) localStorage.setItem('ls_live_id', LIVE.id);
+  mostrarCabecalhoLive();
+}
+
+function mostrarCabecalhoLive() {
   $('hdr-live').textContent = LIVE
     ? LIVE.nome + ' · ' + dataBR(LIVE.data) + (LIVE.status==='encerrada' ? ' (encerrada)' : '')
     : 'Nenhuma live criada';
@@ -832,8 +836,15 @@ function assinarRealtime() {
       if (!daLiveAtual(p)) return;
       if (aplicarMudanca(PEDIDOS, p)) agendarRedesenho();
     })
-    .on('postgres_changes', {event:'*', schema:'public', table:'ls_lives'}, async () => {
-      await carregarLives(); if (modAtual==='config') renderConfig();
+    .on('postgres_changes', {event:'*', schema:'public', table:'ls_lives'}, async p => {
+      if (!aplicarMudanca(LIVES, p)) return;
+      LIVES.sort((a,b) => String(b.data||'').localeCompare(String(a.data||'')) || (b.id - a.id));
+      if (LIVE) {
+        const atual = LIVES.find(l => l.id === LIVE.id);
+        if (atual) { LIVE = atual; mostrarCabecalhoLive(); }
+        else { await carregarTudo(); }        /* a live ativa foi apagada em outro terminal */
+      }
+      if (modAtual === 'config') renderConfig();
     })
     .subscribe(st => {
       $('conn').classList.toggle('off', st !== 'SUBSCRIBED');
@@ -1224,11 +1235,14 @@ async function salvarProduto() {
   if (editProdId) {
     const { error } = await sb.from('ls_produtos').update(reg).eq('id', editProdId);
     if (error) { erroSb(error,'Salvar produto'); return; }
+    const alvo = produto(editProdId);
+    if (alvo) Object.assign(alvo, reg);
   } else {
-    const { error } = await sb.from('ls_produtos').insert(reg);
+    const { data, error } = await sb.from('ls_produtos').insert(reg).select().single();
     if (error) { erroSb(error,'Salvar produto'); return; }
+    if (!PRODUTOS.some(x => x.id === data.id)) PRODUTOS.push(data);
   }
-  await carregarProdutos();
+  PRODUTOS.sort((a,b) => nz(a.ordem) - nz(b.ordem));
   fechar('m-produto');
   atualizarTudo();
   toast('Produto salvo!');
@@ -1241,7 +1255,8 @@ async function excluirProduto() {
   const { error } = await sb.from('ls_produtos').delete().eq('id', p.id);
   if (error) { erroSb(error,'Excluir produto'); return; }
   if (selProdId === p.id) { selProdId = null; $('oform').classList.remove('on'); $('sel-titulo').textContent = '← Selecione um produto'; }
-  await Promise.all([carregarProdutos(), carregarPedidos()]);
+  PRODUTOS = PRODUTOS.filter(x => x.id !== p.id);
+  PEDIDOS  = PEDIDOS.filter(o => o.produto_id !== p.id);
   fechar('m-produto');
   atualizarTudo();
   toast('🗑️ Produto excluído.');
@@ -1727,20 +1742,32 @@ async function salvarLive() {
   if (!nome) { toast('Informe o nome da live.'); return; }
   localStorage.setItem('ls_live_url', $('ml-url').value.trim());
   const reg = { nome: nome, data: $('ml-data').value || null, prazo: $('ml-prazo').value || null };
+
   if (editLiveId) {
     const { error } = await sb.from('ls_lives').update(reg).eq('id', editLiveId);
     if (error) { erroSb(error,'Salvar live'); return; }
+    const l = LIVES.find(x => x.id === editLiveId);
+    if (l) Object.assign(l, reg);
+    if (LIVE && LIVE.id === editLiveId) Object.assign(LIVE, reg);
   } else {
     reg.criada_por = sessao.nome;
     const { data, error } = await sb.from('ls_lives').insert(reg).select().single();
     if (error) { erroSb(error,'Criar live'); return; }
+    /* live nova nasce vazia — não precisa reler produtos nem pedidos do servidor */
+    LIVES.unshift(data);
+    LIVE = data;
     localStorage.setItem('ls_live_id', data.id);
+    PRODUTOS = []; PEDIDOS = [];
+    selProdId = null; selCliente = null;
+    $('oform').classList.remove('on');
+    $('sel-titulo').textContent = '← Selecione um produto';
+    mostrarNoAr(null);
   }
+
+  mostrarCabecalhoLive();
   fechar('m-live');
-  loading(true,'Atualizando...');
-  await carregarTudo();
-  loading(false);
   renderConfig();
+  atualizarTudo();
   toast('Live salva!');
 }
 
@@ -2006,10 +2033,11 @@ function importarXlsx(file) {
 
       if (!novos.length) { toast('Nenhuma linha nova encontrada.'); return; }
       loading(true, 'Gravando ' + novos.length + ' produto(s)...');
-      const { error } = await sb.from('ls_produtos').insert(novos);
+      const { data, error } = await sb.from('ls_produtos').insert(novos).select();
       loading(false);
       if (error) { erroSb(error,'Importar'); return; }
-      await carregarProdutos();
+      (data||[]).forEach(r => { if (!PRODUTOS.some(x => x.id === r.id)) PRODUTOS.push(r); });
+      PRODUTOS.sort((a,b) => nz(a.ordem) - nz(b.ordem));
       fechar('m-importar');
       atualizarTudo();
       toast('✅ ' + novos.length + ' produto(s) importado(s)!' + (ignorados ? ' ('+ignorados+' ignorados)' : ''));
@@ -2035,10 +2063,11 @@ async function importarTexto() {
   });
   if (!novos.length) { toast('Nada para importar. Use Nome;Código;Preço;Descrição'); return; }
   loading(true,'Gravando...');
-  const { error } = await sb.from('ls_produtos').insert(novos);
+  const { data, error } = await sb.from('ls_produtos').insert(novos).select();
   loading(false);
   if (error) { erroSb(error,'Importar texto'); return; }
-  await carregarProdutos();
+  (data||[]).forEach(r => { if (!PRODUTOS.some(x => x.id === r.id)) PRODUTOS.push(r); });
+  PRODUTOS.sort((a,b) => nz(a.ordem) - nz(b.ordem));
   $('txt-import').value = '';
   fechar('m-importar');
   atualizarTudo();
