@@ -460,6 +460,13 @@ button { font-family: inherit; }
       <a id="link-importador" href="http://192.168.0.200:5000/static/importar-live.html" target="_blank" style="color:var(--blue);font-weight:600">importar-live.html</a>
       em qualquer terminal — os produtos caem direto aqui.
     </div>
+    <div class="drop" style="border-color:#7C3AED;background:#FAF7FF;margin-bottom:12px" onclick="document.getElementById('in-json').click()" ondragover="event.preventDefault();this.style.borderColor='var(--red)'" ondragleave="this.style.borderColor='#7C3AED'" ondrop="dropJson(event)">
+      <div style="font-size:26px;margin-bottom:6px">💾</div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:3px;color:#7C3AED">Backup do LiveShop antigo (.json)</div>
+      <div style="font-size:11px;color:var(--muted)">Traz produtos <strong>e pedidos</strong> de uma live já feita no app do computador<br>(o arquivo que sai no botão 💾 Backup)</div>
+      <input type="file" id="in-json" accept=".json" style="display:none" onchange="importarBackup(this.files[0])">
+    </div>
+
     <div class="drop" onclick="document.getElementById('in-xlsx').click()" ondragover="event.preventDefault();this.style.borderColor='var(--red)'" ondragleave="this.style.borderColor=''" ondrop="dropXlsx(event)">
       <div style="font-size:26px;margin-bottom:6px">📊</div>
       <div style="font-weight:600;font-size:13px;margin-bottom:3px">Planilha completa (.xlsx)</div>
@@ -1703,6 +1710,103 @@ function abrirImportar() {
   const l = $('link-importador');
   if (l) l.href = (localStorage.getItem('ls_servidor') || 'http://192.168.0.200:5000') + '/static/importar-live.html';
   abrir('m-importar');
+}
+
+/* ─── Backup .json do LiveShop antigo (v1 ou v2) ─── */
+function dropJson(e) {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.toLowerCase().endsWith('.json')) importarBackup(f);
+  else toast('Selecione o arquivo .json do backup');
+}
+
+function importarBackup(file) {
+  if (!file) return;
+  if (!LIVE) { toast('Crie uma live primeiro em ⚙ Ajustes.'); return; }
+  const r = new FileReader();
+  r.onload = async e => {
+    let bk;
+    try { bk = JSON.parse(e.target.result); } catch(err) { toast('❌ Arquivo ilegível — não parece um backup.'); return; }
+    if (!bk || !Array.isArray(bk.products)) { toast('❌ Não é um backup do LiveShop.'); return; }
+
+    const prods = bk.products.filter(p => p && (p.name || p.code));
+    const peds  = Array.isArray(bk.orders) ? bk.orders.filter(o => o && o.client) : [];
+    if (!prods.length) { toast('O backup não tem produtos.'); return; }
+
+    const aviso = (PRODUTOS.length || PEDIDOS.length)
+      ? '\n\n⚠️ A live "' + LIVE.nome + '" já tem ' + PRODUTOS.length + ' produto(s) e ' + PEDIDOS.length +
+        ' pedido(s). O backup será ACRESCENTADO, podendo duplicar.'
+      : '';
+    if (!confirm('Trazer para a live "' + LIVE.nome + '":\n\n' + prods.length + ' produto(s)\n' + peds.length +
+        ' pedido(s)\n\nOrigem: ' + (bk.liveName || 'backup') + ' — ' + (bk.liveDate || 's/ data') + aviso)) return;
+
+    loading(true, 'Gravando ' + prods.length + ' produto(s)...');
+
+    /* 1. produtos — a ordem de retorno é a mesma da inserção */
+    const novos = prods.map((p, i) => {
+      const seq = String(p.seqLabel || p.seq || (i+1));
+      return {
+        live_id: LIVE.id, seq_label: seq, ordem: ordemDe(seq),
+        nome: String(p.name || '').trim() || '(sem nome)',
+        codigo: (p.code ? String(p.code).trim() : null) || null,
+        ean: (p.ean ? String(p.ean).trim() : null) || null,
+        preco: Number(p.price) || 0,
+        estoque: (p.stock === 0 || p.stock) ? parseInt(p.stock) : null,
+        descricao: p.desc ? String(p.desc) : null,
+        tier_qtd: parseInt(p.tierQty) || null,
+        tier_preco: parseFloat(p.tierPrice) || null,
+        pendente: false
+      };
+    });
+
+    const { data: criados, error: e1 } = await sb.from('ls_produtos').insert(novos).select('id');
+    if (e1) { loading(false); erroSb(e1, 'Importar produtos'); return; }
+
+    /* 2. de-para: id antigo do backup -> id novo do banco */
+    const dePara = {};
+    prods.forEach((p, i) => { if (criados[i]) dePara[p.id] = criados[i].id; });
+
+    /* 3. pedidos */
+    let importados = 0, orfaos = 0;
+    if (peds.length) {
+      loading(true, 'Gravando ' + peds.length + ' pedido(s)...');
+      const linhas = [];
+      peds.forEach(o => {
+        const pid = dePara[o.pid];
+        if (!pid) { orfaos++; return; }
+        const orig = prods.find(p => p.id === o.pid) || {};
+        const qtd = parseInt(o.qty) || 1;
+        /* no app antigo, "entregue" já era retirada */
+        const retirada = o.status === 'entregue' ? qtd : 0;
+        const cliente = String(o.client).trim();
+        linhas.push({
+          live_id: LIVE.id, produto_id: pid,
+          cliente: cliente, cliente_key: chave(cliente),
+          qtd: qtd, qtd_retirada: retirada,
+          preco_unit: Number(o.appliedPrice) || Number(orig.price) || 0,
+          obs: o.obs ? String(o.obs) : null,
+          hora: o.time ? String(o.time) : null,
+          lancado_por: bk.farmacia || sessao.nome,
+          retirado_em: retirada ? new Date().toISOString() : null,
+          retirado_por: retirada ? 'importado do backup' : null
+        });
+      });
+      /* em blocos, para não estourar o limite da requisição */
+      for (let i = 0; i < linhas.length; i += 400) {
+        const { error: e2 } = await sb.from('ls_pedidos').insert(linhas.slice(i, i+400));
+        if (e2) { loading(false); erroSb(e2, 'Importar pedidos'); break; }
+        importados += Math.min(400, linhas.length - i);
+      }
+    }
+
+    await Promise.all([carregarProdutos(), carregarPedidos()]);
+    loading(false);
+    fechar('m-importar');
+    atualizarTudo();
+    toast('✅ ' + novos.length + ' produto(s) e ' + importados + ' pedido(s) importados!' +
+      (orfaos ? ' (' + orfaos + ' pedido(s) sem produto foram ignorados)' : ''), 4200);
+  };
+  r.readAsText(file);
 }
 
 function dropXlsx(e) {
