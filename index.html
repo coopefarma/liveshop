@@ -1103,8 +1103,7 @@ async function lancarPedido() {
   const dup = PEDIDOS.find(o => o.produto_id === selProdId && chave(o.cliente) === chave(cliente));
   if (dup && !confirm('⚠️ "'+cliente+'" já tem pedido deste produto ('+dup.qtd+' un).\n\nRegistrar um NOVO pedido mesmo assim?')) return;
 
-  let preco = p ? nz(p.preco) : 0;
-  if (p && p.tier_qtd && p.tier_preco && qtd >= p.tier_qtd) preco = nz(p.tier_preco);
+  const preco = p ? precoUnitDe(p, qtd) : 0;
 
   const novo = {
     live_id: LIVE.id, produto_id: selProdId, cliente: cliente, cliente_key: chave(cliente),
@@ -1232,10 +1231,36 @@ async function salvarProduto() {
   };
 
   if (editProdId) {
+    const antes = produto(editProdId) || {};
+    const mudouPreco = Number(antes.preco) !== Number(reg.preco)
+      || Number(antes.tier_qtd||0) !== Number(reg.tier_qtd||0)
+      || Number(antes.tier_preco||0) !== Number(reg.tier_preco||0);
+    const precoAntigo = Number(antes.preco);
+
     const { error } = await sb.from('ls_produtos').update(reg).eq('id', editProdId);
     if (error) { erroSb(error,'Salvar produto'); return; }
     const alvo = produto(editProdId);
     if (alvo) Object.assign(alvo, reg);
+
+    /* Preço corrigido depois de a live já ter rodado: oferece acertar os pedidos.
+       Sem isso, o total e a tela de retirada continuariam com o valor errado. */
+    if (mudouPreco && alvo) {
+      const nPed = resumoProduto(alvo.id).peds;
+      if (nPed > 0) {
+        const desatualizados = pedidosDoProduto(alvo.id)
+          .filter(o => Number(o.preco_unit) !== precoUnitDe(alvo, o.qtd)).length;
+        if (desatualizados > 0 && confirm(
+            'O preço passou de R$ ' + fmt(precoAntigo) + ' para R$ ' + fmt(reg.preco) + '.\n\n' +
+            'Este produto tem ' + desatualizados + ' pedido(s) gravados com o valor anterior.\n\n' +
+            'Atualizar também esses pedidos?\n' +
+            'Clique OK se o preço estava errado. Cancele se foi uma mudança de preço a partir de agora.')) {
+          loading(true, 'Ajustando ' + desatualizados + ' pedido(s)...');
+          const n = await ajustarPrecoDosPedidos(alvo);
+          loading(false);
+          toast('💲 ' + n + ' pedido(s) atualizados para o preço novo.', 3600);
+        }
+      }
+    }
   } else {
     const { data, error } = await sb.from('ls_produtos').insert(reg).select().single();
     if (error) { erroSb(error,'Salvar produto'); return; }
@@ -1259,6 +1284,35 @@ async function excluirProduto() {
   fechar('m-produto');
   atualizarTudo();
   toast('🗑️ Produto excluído.');
+}
+
+/* Preço que um pedido deste produto deveria ter, considerando a faixa por quantidade */
+function precoUnitDe(p, qtd) {
+  return (p.tier_qtd && p.tier_preco && nz(qtd) >= p.tier_qtd) ? nz(p.tier_preco) : nz(p.preco);
+}
+
+/* Regrava o preço dos pedidos de um produto — usado quando o valor da live estava errado */
+async function ajustarPrecoDosPedidos(p) {
+  const grupos = new Map();
+  pedidosDoProduto(p.id).forEach(o => {
+    const certo = precoUnitDe(p, o.qtd);
+    if (Number(o.preco_unit) === certo) return;
+    if (!grupos.has(certo)) grupos.set(certo, []);
+    grupos.get(certo).push(o);
+  });
+
+  let mudados = 0;
+  for (const [preco, pedidos] of grupos) {
+    for (let i = 0; i < pedidos.length; i += 200) {
+      const bloco = pedidos.slice(i, i + 200);
+      const { error } = await sb.from('ls_pedidos')
+        .update({ preco_unit: preco }).in('id', bloco.map(o => o.id));
+      if (error) { erroSb(error, 'Atualizar preço dos pedidos'); return mudados; }
+      bloco.forEach(o => { o.preco_unit = preco; mudados++; });
+    }
+  }
+  atualizarTudo();
+  return mudados;
 }
 
 /* ══════════════════ RESUMO DA LIVE ══════════════════ */
