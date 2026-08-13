@@ -166,9 +166,7 @@ button { font-family: inherit; }
 
 /* ═══════ PROGRESSO ═══════ */
 .bar { height: 10px; background: var(--surface3); border-radius: 6px; overflow: hidden; }
-.bar > i { display: block; height: 100%; background: var(--green); border-radius: 6px; transition: width .4s; }
-.bar.warn > i { background: var(--warn); }
-.bar.red > i { background: var(--red); }
+.bar > i { display: block; height: 100%; background: var(--red); border-radius: 6px; transition: width .4s; }
 
 /* ═══════ PAINEL ═══════ */
 .wrap { flex: 1; overflow-y: auto; padding: 16px; }
@@ -1410,7 +1408,6 @@ function atualizarBarraRetirada() {
   const pct = un ? Math.round(ret / un * 100) : 0;
   const bar = $('ret-bar'); if (!bar) return;
   bar.style.width = pct + '%';
-  bar.parentElement.className = 'bar' + (pct >= 80 ? '' : pct >= 40 ? ' warn' : ' red');
   $('ret-pct-txt').textContent = pct + '%';
   $('ret-resumo').innerHTML = ret + ' de ' + un + ' un<br>faltam <strong>' + (un-ret) + '</strong>';
 }
@@ -1695,11 +1692,11 @@ function renderPainel() {
     '<div class="cards">' +
       '<div class="card"><div class="n">'+pctUn+'%</div>' +
         '<div class="l">Retirado em unidades</div>' +
-        '<div class="bar '+(pctUn>=80?'':pctUn>=40?'warn':'red')+'" style="margin-top:9px"><i style="width:'+pctUn+'%"></i></div>' +
+        '<div class="bar" style="margin-top:9px"><i style="width:'+pctUn+'%"></i></div>' +
         '<div class="det">'+ret+' de '+un+' un · faltam <strong>'+(un-ret)+'</strong></div></div>' +
       '<div class="card"><div class="n">'+pctVal+'%</div>' +
         '<div class="l">Retirado em valor</div>' +
-        '<div class="bar '+(pctVal>=80?'':pctVal>=40?'warn':'red')+'" style="margin-top:9px"><i style="width:'+pctVal+'%"></i></div>' +
+        '<div class="bar" style="margin-top:9px"><i style="width:'+pctVal+'%"></i></div>' +
         '<div class="det">R$ '+fmtV(valRet)+' de R$ '+fmtV(val)+'<br>a receber: <strong>R$ '+fmtV(val-valRet)+'</strong></div></div>' +
       '<div class="card"><div class="n">'+clientes.length+'</div><div class="l">Clientes na live</div>' +
         '<div class="det">' +
