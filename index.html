@@ -99,7 +99,7 @@ button { font-family: inherit; }
 .badge.has { background: var(--green-light); color: var(--green); }
 .mini { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-left: 5px; }
 .mini.ok { background: var(--green-light); color: var(--green); }
-.mini.warn { background: var(--warn-light); color: var(--warn); }
+.mini.warn { background: var(--red-light); color: var(--red); }
 .mini.esg { background: var(--red-light); color: var(--red); }
 .acts { display: flex; gap: 4px; justify-content: center; }
 
@@ -139,7 +139,7 @@ button { font-family: inherit; }
 .tag-p { background: var(--green-light); color: var(--green); }
 .tag-o { background: var(--surface3); color: var(--muted); }
 .tag-r { background: var(--green); color: white; }
-.tag-par { background: var(--warn-light); color: var(--warn); }
+.tag-par { background: var(--red-light); color: var(--red); }
 
 /* ═══════ RETIRADA ═══════ */
 .cli-item { padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; gap: 10px; }
@@ -148,7 +148,7 @@ button { font-family: inherit; }
 .cli-item .nome { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cli-item .info { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .pill { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 12px; white-space: nowrap; }
-.pill.pend { background: var(--warn-light); color: var(--warn); }
+.pill.pend { background: var(--red-light); color: var(--red); }
 .pill.parc { background: var(--blue-light); color: var(--blue); }
 .pill.ok   { background: var(--green-light); color: var(--green); }
 .ret-head { padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface2); }
@@ -1483,7 +1483,7 @@ function renderDetalheCliente() {
 
   $('ret-cli').textContent = nome;
   $('ret-cli-sub').innerHTML = itens.length + ' item(ns) · ' + un + ' unidade(s) · Total R$ ' + fmtV(val) +
-    (pend > 0 ? ' · <strong style="color:var(--warn)">faltam ' + pend + '</strong>' : ' · <strong style="color:var(--green)">tudo retirado</strong>');
+    (pend > 0 ? ' · <strong style="color:var(--red)">faltam ' + pend + '</strong>' : ' · <strong style="color:var(--green)">tudo retirado</strong>');
   $('btn-tudo').style.display = pend > 0 ? 'inline-flex' : 'none';
 
   $('ret-itens').innerHTML = itens.map(o => {
@@ -1659,7 +1659,7 @@ function renderPainel() {
       '<td class="num">'+c.itens+'</td>' +
       '<td class="num">'+c.un+'</td>' +
       '<td class="num" style="color:var(--green)">'+c.ret+'</td>' +
-      '<td class="num"><strong style="color:var(--warn)">'+c.pend+'</strong></td>' +
+      '<td class="num"><strong style="color:var(--red)">'+c.pend+'</strong></td>' +
       '<td class="num">R$ '+fmtV(c.pend_val)+'</td>' +
       '<td class="num" style="font-size:11px;color:var(--muted)">'+(c.ultima?horaBR(c.ultima):'—')+'</td></tr>').join('');
 
@@ -1675,7 +1675,7 @@ function renderPainel() {
       '<td><div class="trunc">'+esc(p.nome)+'</div></td>' +
       '<td class="num">'+p.un+'</td>' +
       '<td class="num" style="color:var(--green)">'+p.ret+'</td>' +
-      '<td class="num"><strong style="color:var(--warn)">'+p.pend+'</strong></td>' +
+      '<td class="num"><strong style="color:var(--red)">'+p.pend+'</strong></td>' +
       '<td class="num">R$ '+fmtV(p.pend_val)+'</td></tr>').join('');
 
   const prazoTxt = LIVE.prazo
@@ -2254,7 +2254,7 @@ function pdfPorCliente(somentePendentes) {
         '<td style="font-family:monospace;font-size:11px">'+esc(p?(p.codigo||''):'')+'</td>' +
         '<td style="text-align:center;font-weight:700">'+o.qtd+'</td>' +
         '<td style="text-align:center;color:#1E8A4C">'+nz(o.qtd_retirada)+'</td>' +
-        '<td style="text-align:center;font-weight:700;color:#B45309">'+pendenteDe(o)+'</td>' +
+        '<td style="text-align:center;font-weight:700;color:#ED3237">'+pendenteDe(o)+'</td>' +
         '<td style="text-align:right">R$ '+fmt(o.preco_unit)+'</td>' +
         '<td style="width:50px;border-bottom:1px solid #ccc">&nbsp;</td></tr>';
     }).join('');
