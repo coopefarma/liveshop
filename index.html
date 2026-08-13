@@ -461,9 +461,9 @@ button { font-family: inherit; }
     <h3>Importar Produtos</h3>
     <div style="background:var(--blue-light);border:1px solid #cfe0f5;border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.55;margin-bottom:12px">
       <strong>Importação rápida por código (seq · código · preço)</strong><br>
-      Ela precisa consultar o InovaFarma, que só responde dentro da rede da farmácia. Use a página
-      <a id="link-importador" href="http://192.168.0.200:5000/static/importar-live.html" target="_blank" style="color:var(--blue);font-weight:600">importar-live.html</a>
-      em qualquer terminal — os produtos caem direto aqui.
+      Ela precisa consultar o InovaFarma, e por isso roda na página
+      <a id="link-importador" href="http://192.168.0.200:5000/static/importar-live.html" target="_blank" style="color:var(--blue);font-weight:600">importar-live.html</a>.
+      A página acha o servidor sozinha, esteja você na farmácia ou em casa pela VPN. Os produtos caem direto aqui.
     </div>
     <div class="drop" style="border-color:#7C3AED;background:#FAF7FF;margin-bottom:12px" onclick="document.getElementById('in-json').click()" ondragover="event.preventDefault();this.style.borderColor='var(--red)'" ondragleave="this.style.borderColor='#7C3AED'" ondrop="dropJson(event)">
       <div style="font-size:26px;margin-bottom:6px">💾</div>
